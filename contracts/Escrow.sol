@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.7.0 <0.9.0;
 
-contract Escrow {
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract Escrow is Ownable, AccessControl {
     struct ContractDetails {
         address requestor;
         address contractor;
@@ -10,23 +13,24 @@ contract Escrow {
         uint16 fulfilledMessageCount;
     }
 
+    bytes32 public constant VERIFIER_ROLE = keccak256("VERIFIER");
+
     mapping(address => bytes32[]) public activeContracts;
     mapping(bytes32 => ContractDetails) public contractLookup;
     mapping(address => uint256) public withdrawalAmount;
-    address public owner;
+    mapping(bytes32 => mapping(bytes32 => uint16)) preApprovedMessages;
+
     uint8 private maxOpenContracts;
     uint16 public platformFee;
 
     //the platform fee is in basis points so divide by 10k to get the percentage value
     //same way the max open contracts cannot be larger than 255
     constructor(uint16 _platformFee, uint8 _maxOpenContracts) {
-        owner = msg.sender;
         platformFee = _platformFee;
         maxOpenContracts = _maxOpenContracts;
     }
 
     function createContract(
-        address contractor,
         bytes32 contractHash,
         uint256 payoutPerMessage,
         uint16 contractedMessageCount
@@ -40,11 +44,6 @@ contract Escrow {
             "Too many active contracts for Requestor!"
         );
         require(
-            activeContracts[contractor].length < maxOpenContracts,
-            "Too many active contracts for Contractor!"
-        );
-        require(msg.sender != contractor, "Can't create a job for yourself");
-        require(
             msg.value >=
                 calculateRequiredPayment(
                     payoutPerMessage,
@@ -54,14 +53,26 @@ contract Escrow {
         );
 
         activeContracts[msg.sender].push(contractHash);
-        activeContracts[contractor].push(contractHash);
+        
         contractLookup[contractHash] = ContractDetails({
             requestor: msg.sender,
-            contractor: contractor,
+            contractor: address(0),
             payoutPerMessage: payoutPerMessage,
             contractedMessageCount: contractedMessageCount,
             fulfilledMessageCount: 0
         });
+    }
+
+    function setContractor(bytes32 contractHash, address contractor) public {
+        require(contractor != address(0) && contractor != msg.sender, "Invalid contractor address specified");
+        ContractDetails storage details = getContractDetailsIfRequestor(contractHash);
+
+        activeContracts[contractor].push(contractHash);
+        details.contractor = contractor;
+    }
+
+    function setVerifier(address verifier) public onlyOwner {
+        _grantRole(VERIFIER_ROLE, verifier);
     }
 
     function getActiveContracts(
@@ -70,7 +81,7 @@ contract Escrow {
         retval = activeContracts[userId];
     }
 
-    function finalizeContract(bytes32 contractHash) public {
+    function closeContract(bytes32 contractHash) public {
         require(
             contractLookup[contractHash].requestor != address(0),
             "The contract requested doesn't exist"
@@ -92,17 +103,48 @@ contract Escrow {
         removeHash(contractHash, details.requestor);
     }
 
-    //this function is a placeholder
-    function verifyMessages(bytes32 contractHash, uint16 verifyCount) public  {
-        ContractDetails storage details = getContractDetailsIfInvolved(contractHash);
-        details.fulfilledMessageCount += verifyCount; //dangerous
+    function addPreApprovedMessages(bytes32 contractHash, bytes32[] memory msgHashes, uint16[] memory msgCounts) public {
+        getContractDetailsIfRequestor(contractHash);
+        require(msgHashes.length == msgCounts.length, "The two arrays need to be the same length");
+
+        for (uint i = 0; i < msgHashes.length; i++) {
+            preApprovedMessages[contractHash][msgHashes[i]] += msgCounts[i];
+        }
+    }
+
+    function verifyMessages(bytes32 contractHash, bytes32[] memory msgHashes, uint16[] memory msgCounts) public onlyRole(VERIFIER_ROLE) {
+        ContractDetails storage details = contractLookup[contractHash];
+        require(msgHashes.length == msgCounts.length, "The two arrays need to be the same length");
+
+        for (uint i = 0; i < msgHashes.length; i++) {
+            uint16 outstandingMsgCnt = details.contractedMessageCount - details.fulfilledMessageCount;
+            uint16 preApprCnt = preApprovedMessages[contractHash][msgHashes[i]];
+            uint16 verifiedCnt = min(min(preApprCnt, outstandingMsgCnt), msgCounts[i]); 
+            details.fulfilledMessageCount += verifiedCnt;
+            preApprovedMessages[contractHash][msgHashes[i]] -= 
+            details.fulfilledMessageCount == details.contractedMessageCount 
+            ? preApprCnt 
+            : verifiedCnt; 
+        } 
+    }
+
+    function min(uint16 first, uint16 second) private pure returns(uint16) {
+        return first <= second ? first : second;
     } 
 
-     function getContractDetailsIfInvolved(bytes32 contractHash) private view returns(ContractDetails storage details) {
+    function getContractDetailsIfInvolved(bytes32 contractHash) private view returns(ContractDetails storage details) {
         details = contractLookup[contractHash];
         require(
             msg.sender == details.requestor || msg.sender == details.contractor,
             "The sender is not involved in this contract!"
+        );
+    }
+
+     function getContractDetailsIfRequestor(bytes32 contractHash) private view returns(ContractDetails storage details) {
+        details = contractLookup[contractHash];
+        require(
+            msg.sender == details.requestor,
+            "Only the contract's requestor may run this operation!"
         );
     }
 
@@ -153,11 +195,4 @@ contract Escrow {
         platformFee = _platformFee;
     }
 
-    modifier onlyOwner() {
-        require(
-            msg.sender == owner,
-            "Only the smart contract's owner is allowed run this operation"
-        );
-        _;
-    }
 }
