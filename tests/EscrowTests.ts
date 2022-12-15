@@ -4,6 +4,7 @@ import { assert } from "console";
 import { BigNumber } from "ethers";
 import { parseEther } from "ethers/lib/utils";
 import { ethers } from "hardhat";
+import { waitForDebugger } from "inspector";
 import { exitCode } from "process";
 import { Escrow, Escrow__factory } from "../typechain-types";
 
@@ -115,6 +116,11 @@ describe("Escrow contract tests", async () => {
             expect(storedHash).to.be.equal(hash);
         });
 
+        it("can't change Contractor on already assigned contract", async () => {
+            await expect(contract.setContractor(hash, accounts[1].address)).not.to.be.reverted;
+            await expect(contract.setContractor(hash, accounts[2].address)).to.be.revertedWith("Cannot assign a contract multiple times!");
+        });
+
         it("contract details can be requested with the Hash from contractLookup", async () => {
             let contractDetails = await contract.contractLookup(hash);
 
@@ -191,7 +197,123 @@ describe("Escrow contract tests", async () => {
 
     });
 
-    describe("Existing contract finalization", async () => {
+    describe("Contract finalization", async () => {
+        const contractCost = ethers.utils.parseEther((msgCost * msgCnt).toString());
+
+        beforeEach(async () => {
+            await contract.createContract(
+                hash,
+                ethers.utils.parseEther(msgCost.toString()),
+                msgCnt,
+                { value: contractCost }
+            )
+        });
+
+        it("Requestor finalizing a contract sets the first bit", async () => {
+            await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+            await expect(contract.finalizeContract(hash)).not.to.be.reverted;
+            let details = await contract.contractLookup(hash);
+            expect(details.partiesFinalized).to.be.eq(1);
+        });
+
+        it("Contactor finalizing a contract sets the second bit", async () => {
+            await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+            await expect(contract.connect(await getSignerForAccount(1)).finalizeContract(hash)).not.to.be.reverted;
+            let details = await contract.contractLookup(hash);
+            expect(details.partiesFinalized).to.be.eq(2);
+        });
+
+        it("Both parties finalizing sets both bits", async () => {
+            await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+            await expect(contract.finalizeContract(hash)).not.to.be.reverted;
+            await expect(contract.connect(await getSignerForAccount(1)).finalizeContract(hash)).not.to.be.reverted;
+            let details = await contract.contractLookup(hash);
+            expect(details.partiesFinalized).to.be.eq(3);
+        });
+
+        it("Multiple finalizations by the Requestor are handled", async () => {
+            await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+            await expect(contract.finalizeContract(hash)).not.to.be.reverted;
+            await expect(contract.finalizeContract(hash)).not.to.be.reverted;
+            await expect(contract.finalizeContract(hash)).not.to.be.reverted;
+            let details = await contract.contractLookup(hash);
+            expect(details.partiesFinalized).to.be.eq(1);
+        });
+
+        it("Multiple finalizations by the Contractor are handled", async () => {
+            await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+            await expect(contract.connect(await getSignerForAccount(1)).finalizeContract(hash)).not.to.be.reverted;
+            await expect(contract.connect(await getSignerForAccount(1)).finalizeContract(hash)).not.to.be.reverted;
+            await expect(contract.connect(await getSignerForAccount(1)).finalizeContract(hash)).not.to.be.reverted;
+            let details = await contract.contractLookup(hash);
+            expect(details.partiesFinalized).to.be.eq(2);
+        });
+
+        function aboutAWeekFromNow() {
+            return BigNumber.from(Math.floor(Date.now() / 1000 + 600000));
+        }
+
+        it("requestor closing an unfinalized contract sets a timeout", async () => {
+            await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+            await expect(contract.closeContract(hash)).not.to.be.reverted;
+            let details = await contract.contractLookup(hash);
+
+            expect(details.canBeClosedAfterEpoch).to.be.greaterThan(aboutAWeekFromNow());
+        });
+
+        it("requestor closing a contract finalized by the contractor is instant", async () => {
+            await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+            await expect(contract.connect(await getSignerForAccount(1)).finalizeContract(hash)).not.to.be.reverted;
+            await expect(contract.closeContract(hash)).not.to.be.reverted;
+            let details = await contract.contractLookup(hash);
+            //requestor being zero on the details means that the data sturcture was cleaned up
+            expect(details.requestor).to.be.eq(addressZero);
+        });
+
+        it("contractor closing an unfinalized contract sets a timeout", async () => {
+            await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+            await expect(contract.connect(await getSignerForAccount(1)).closeContract(hash)).not.to.be.reverted;
+            let details = await contract.contractLookup(hash);
+            expect(details.canBeClosedAfterEpoch).to.be.greaterThan(aboutAWeekFromNow());
+        });
+
+        it("contractor closing a contract finalized by the requestor is instant", async () => {
+            await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+            await expect(contract.finalizeContract(hash)).not.to.be.reverted;
+            await expect(contract.connect(await getSignerForAccount(1)).closeContract(hash)).not.to.be.reverted;
+            let details = await contract.contractLookup(hash);
+            //requestor being zero on the details means that the data sturcture was cleaned up
+            expect(details.requestor).to.be.eq(addressZero);
+        });
+
+        it("contract can be closed after timeout", async () => {
+            await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+            await expect(contract.closeContract(hash)).not.to.be.reverted;
+            let details = await contract.contractLookup(hash);
+            expect(details.canBeClosedAfterEpoch).to.be.greaterThan(aboutAWeekFromNow());
+
+            const blockNumBefore = await ethers.provider.getBlockNumber();
+            let blockBefore = await ethers.provider.getBlock(blockNumBefore);
+            //mine the next block which is more than a week ahead
+            await ethers.provider.send("evm_mine", [blockBefore.timestamp + 700000]);
+            blockBefore = await ethers.provider.getBlock(blockNumBefore + 1);
+            console.log(details.canBeClosedAfterEpoch, blockBefore.timestamp); 
+
+            expect((await contract.getActiveContracts(accounts[0].address)).length).to.be.eq(1);
+            await expect(contract.closeContract(hash)).not.to.be.reverted;
+            details = await contract.contractLookup(hash);
+            expect(details.requestor).to.be.eq(addressZero);
+            console.log(hash)
+            expect((await contract.getActiveContracts(accounts[0].address))[0]).to.be.eq(0);
+            expect(await contract.withdrawalAmount(accounts[0].address)).to.be.eq(contractCost);
+
+            
+        });
+
+        
+    });
+
+    describe("Closing contract", async () => {
         const contractCost = ethers.utils.parseEther((msgCost * msgCnt).toString());
         const msgHash1 = ethers.utils.formatBytes32String("msg1");
 
@@ -217,6 +339,8 @@ describe("Escrow contract tests", async () => {
 
         it("closing an unstarted contract refunds the Requestor fully", async () => {
             await expect(contract.closeContract(hash)).not.to.be.reverted;
+            //there is no direct return value, so we need to check if the contract data been erased
+            expect(await (await contract.contractLookup(hash)).requestor).to.be.eq(addressZero);
             let withdrawBalance = await contract.withdrawalAmount(accounts[0].address);
 
             expect(withdrawBalance).to.be.eq(contractCost)
@@ -231,11 +355,15 @@ describe("Escrow contract tests", async () => {
             expect(details.requestor).to.be.eq(addressZero);
         });
 
-        it("closing a started contract distributes money proprtionally", async () => {
+        it("closing a finalized distributes money proprtionally", async () => {
             await expect(contract.setVerifier(accounts[3].address)).not.to.be.reverted;
             await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+           
             await expect(contract.addPreApprovedMessages(hash,[msgHash1],[5])).not.to.be.reverted;
             await expect(contract.connect(await getSignerForAccount(3)).verifyMessages(hash,[msgHash1],[5])).not.to.be.reverted;
+            await expect(contract.finalizeContract(hash)).not.to.be.reverted;//requestor finalizing
+            await expect(contract.connect(await getSignerForAccount(1)).finalizeContract(hash)).not.to.be.reverted;//contractor finalizing
+            expect((await contract.contractLookup(hash)).partiesFinalized).to.be.eq(3); //done
             await expect(contract.closeContract(hash)).not.to.be.reverted;
  
             expect(await contract.withdrawalAmount(accounts[0].address)).to.be.eq(contractCost.div(2))
