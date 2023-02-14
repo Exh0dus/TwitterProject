@@ -105,12 +105,15 @@ contract Escrow is Ownable, AccessControl {
         );
 
         ContractDetails storage details = getContractDetailsIfInvolved(contractHash);
+
         if(!canCloseContract(details))
             return;
   
         withdrawalAmount[details.requestor] +=
             (details.contractedMessageCount - details.fulfilledMessageCount) *
             details.payoutPerMessage;
+
+        address requestor = details.requestor;
 
         if (details.contractor != address(0)) {
             withdrawalAmount[details.contractor] +=
@@ -119,7 +122,7 @@ contract Escrow is Ownable, AccessControl {
             removeHash(contractHash, details.contractor);
         }
 
-        removeHash(contractHash, details.requestor);
+        removeHash(contractHash, requestor);
     }
 
     function canCloseContract(ContractDetails storage details) private returns(bool) {

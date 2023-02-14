@@ -6,6 +6,10 @@ git clone https://github.com/Exh0dus/TwitterProject.git
 yarn install
 yarn hardhat compile
 ```
+When developing turn on auto compilation with hardhat
+```
+yarn hardhat watch compilation
+```
 
 Unit tests can be run from VS Code or via hardhat 
 ```
@@ -17,8 +21,6 @@ data model I've outlined in the design document. It implements the functions dea
 with data. For further details on what it does and how, refer to the **Unit tests** 
 and the **Design Doc** linked below. In it's current form the contract is optimized 
 for readability not for gas consumption. 
-**Also**, it misses the whole part for verifying messages, that will be an interesting challenge,
-but first we need to finalize how we want to go about it. 
 
 [Design document available here](https://docs.google.com/document/d/1wSigQzpjCEbSuFflcBxiup0cKEBFwdCz7KPJ1hVFOek/edit#)
 

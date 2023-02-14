@@ -297,20 +297,14 @@ describe("Escrow contract tests", async () => {
             //mine the next block which is more than a week ahead
             await ethers.provider.send("evm_mine", [blockBefore.timestamp + 700000]);
             blockBefore = await ethers.provider.getBlock(blockNumBefore + 1);
-            console.log(details.canBeClosedAfterEpoch, blockBefore.timestamp); 
 
             expect((await contract.getActiveContracts(accounts[0].address)).length).to.be.eq(1);
             await expect(contract.closeContract(hash)).not.to.be.reverted;
             details = await contract.contractLookup(hash);
             expect(details.requestor).to.be.eq(addressZero);
-            console.log(hash)
-            expect((await contract.getActiveContracts(accounts[0].address))[0]).to.be.eq(0);
+            expect((await contract.getActiveContracts(accounts[0].address))).to.be.empty;
             expect(await contract.withdrawalAmount(accounts[0].address)).to.be.eq(contractCost);
-
-            
         });
-
-        
     });
 
     describe("Closing contract", async () => {
