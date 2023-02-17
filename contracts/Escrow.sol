@@ -125,6 +125,12 @@ contract Escrow is Ownable, AccessControl {
         removeHash(contractHash, requestor);
     }
 
+    function withdraw(uint256 _amount) public payable {
+        require(withdrawalAmount[msg.sender] >= _amount, "Not enough balance available!");
+        withdrawalAmount[msg.sender] -= _amount;
+        payable(msg.sender).transfer(_amount);
+    }
+
     function canCloseContract(ContractDetails storage details) private returns(bool) {
         address contractor = details.contractor;
         bool isContractor = msg.sender == contractor;

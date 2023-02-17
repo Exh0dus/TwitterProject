@@ -1,4 +1,5 @@
 import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
+import { doesNotMatch } from "assert";
 import { expect } from "chai";
 import { assert } from "console";
 import { BigNumber } from "ethers";
@@ -364,6 +365,38 @@ describe("Escrow contract tests", async () => {
             expect(await contract.withdrawalAmount(accounts[1].address)).to.be.eq(contractCost.div(2))
         });
 
+
+        it("both paries can withdraw", async () => {
+            await expect(contract.setVerifier(accounts[3].address)).not.to.be.reverted;
+            await expect(contract.setContractor(hash,accounts[1].address)).not.to.be.reverted;
+           
+            await expect(contract.addPreApprovedMessages(hash,[msgHash1],[5])).not.to.be.reverted;
+            await expect(contract.connect(await getSignerForAccount(3)).verifyMessages(hash,[msgHash1],[5])).not.to.be.reverted;
+            await expect(contract.finalizeContract(hash)).not.to.be.reverted;//requestor finalizing
+            await expect(contract.connect(await getSignerForAccount(1)).finalizeContract(hash)).not.to.be.reverted;//contractor finalizing
+            expect((await contract.contractLookup(hash)).partiesFinalized).to.be.eq(3); //done
+            await expect(contract.closeContract(hash)).not.to.be.reverted;
+ 
+            expect(await contract.withdrawalAmount(accounts[0].address)).to.be.eq(contractCost.div(2));
+            expect(await contract.withdrawalAmount(accounts[1].address)).to.be.eq(contractCost.div(2));
+
+            const withdrawAndCheck = async (accIdx:number) => {
+                const prevBalance = await accounts[accIdx].getBalance();
+                expect(await contract.connect(accounts[accIdx]).withdraw(contractCost.div(2))).not.to.be.reverted;
+                const newBalance = await accounts[accIdx].getBalance();
+                expect(newBalance.sub(prevBalance)).to.be.closeTo(contractCost.div(2), parseEther("0.0001"));
+            }
+
+            await withdrawAndCheck(0);
+            await withdrawAndCheck(1);
+            
+        });
+
+        it("cannot withdraw without balance", async () => {
+            await expect(contract.connect(accounts[0]).withdraw(contractCost.div(2))).to.be.rejectedWith("Not enough balance available!");
+            await expect(contract.connect(accounts[1]).withdraw(contractCost.div(2))).to.be.rejectedWith("Not enough balance available!");
+        });
+
         it("closing a started contract cleans up correctly", async () => {
             await expect(contract.setVerifier(accounts[3].address)).not.to.be.reverted;
             await expect(contract.addPreApprovedMessages(hash,[msgHash1],[1])).not.to.be.reverted;
@@ -395,7 +428,6 @@ describe("Escrow contract tests", async () => {
         });
 
     });
-
 
     describe("Platform fee", async () => {
         const platformFee = 500; //it is in basis points 500 = 5%
